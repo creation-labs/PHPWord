@@ -11,229 +11,138 @@
  * contributors, visit https://github.com/PHPOffice/PHPWord/contributors.
  *
  * @link        https://github.com/PHPOffice/PHPWord
- * @copyright   2010-2016 PHPWord contributors
+ * @copyright   2010-2014 PHPWord contributors
  * @license     http://www.gnu.org/licenses/lgpl.txt LGPL version 3
  */
 
 namespace PhpOffice\PhpWord;
 
-use PhpOffice\PhpWord\Escaper\RegExp;
-use PhpOffice\PhpWord\Escaper\Xml;
 use PhpOffice\PhpWord\Exception\CopyFileException;
 use PhpOffice\PhpWord\Exception\CreateTemporaryFileException;
 use PhpOffice\PhpWord\Exception\Exception;
+use PhpOffice\PhpWord\Shared\String;
 use PhpOffice\PhpWord\Shared\ZipArchive;
-use Zend\Stdlib\StringUtils;
 
 class TemplateProcessor
 {
-    const MAXIMUM_REPLACEMENTS_DEFAULT = -1;
-
     /**
      * ZipArchive object.
      *
      * @var mixed
      */
-    protected $zipClass;
+    private $zipClass;
 
     /**
      * @var string Temporary document filename (with path).
      */
-    protected $tempDocumentFilename;
+    private $temporaryDocumentFilename;
 
     /**
      * Content of main document part (in XML format) of the temporary document.
      *
      * @var string
      */
-    protected $tempDocumentMainPart;
+    private $temporaryDocumentMainPart;
 
     /**
      * Content of headers (in XML format) of the temporary document.
      *
      * @var string[]
      */
-    protected $tempDocumentHeaders = array();
+    private $temporaryDocumentHeaders = array();
 
     /**
      * Content of footers (in XML format) of the temporary document.
      *
      * @var string[]
      */
-    protected $tempDocumentFooters = array();
+    private $temporaryDocumentFooters = array();
 
     /**
      * @since 0.12.0 Throws CreateTemporaryFileException and CopyFileException instead of Exception.
      *
      * @param string $documentTemplate The fully qualified template filename.
-     *
      * @throws \PhpOffice\PhpWord\Exception\CreateTemporaryFileException
      * @throws \PhpOffice\PhpWord\Exception\CopyFileException
      */
     public function __construct($documentTemplate)
     {
         // Temporary document filename initialization
-        $this->tempDocumentFilename = tempnam(Settings::getTempDir(), 'PhpWord');
-        if (false === $this->tempDocumentFilename) {
+        $this->temporaryDocumentFilename = tempnam(Settings::getTempDir(), 'PhpWord');
+        if (false === $this->temporaryDocumentFilename) {
             throw new CreateTemporaryFileException();
         }
 
         // Template file cloning
-        if (false === copy($documentTemplate, $this->tempDocumentFilename)) {
-            throw new CopyFileException($documentTemplate, $this->tempDocumentFilename);
+        if (false === copy($documentTemplate, $this->temporaryDocumentFilename)) {
+            throw new CopyFileException($documentTemplate, $this->temporaryDocumentFilename);
         }
 
         // Temporary document content extraction
         $this->zipClass = new ZipArchive();
-        $this->zipClass->open($this->tempDocumentFilename);
+        $this->zipClass->open($this->temporaryDocumentFilename);
         $index = 1;
-        while (false !== $this->zipClass->locateName($this->getHeaderName($index))) {
-            $this->tempDocumentHeaders[$index] = $this->fixBrokenMacros(
-                $this->zipClass->getFromName($this->getHeaderName($index))
-            );
+        while ($this->zipClass->locateName($this->getHeaderName($index)) !== false) {
+            $this->temporaryDocumentHeaders[$index] = $this->zipClass->getFromName($this->getHeaderName($index));
             $index++;
         }
         $index = 1;
-        while (false !== $this->zipClass->locateName($this->getFooterName($index))) {
-            $this->tempDocumentFooters[$index] = $this->fixBrokenMacros(
-                $this->zipClass->getFromName($this->getFooterName($index))
-            );
+        while ($this->zipClass->locateName($this->getFooterName($index)) !== false) {
+            $this->temporaryDocumentFooters[$index] = $this->zipClass->getFromName($this->getFooterName($index));
             $index++;
         }
-        $this->tempDocumentMainPart = $this->fixBrokenMacros($this->zipClass->getFromName($this->getMainPartName()));
-    }
-
-    /**
-     * @param string $xml
-     * @param \XSLTProcessor $xsltProcessor
-     *
-     * @return string
-     *
-     * @throws \PhpOffice\PhpWord\Exception\Exception
-     */
-    protected function transformSingleXml($xml, $xsltProcessor)
-    {
-        $domDocument = new \DOMDocument();
-        if (false === $domDocument->loadXML($xml)) {
-            throw new Exception('Could not load the given XML document.');
-        }
-
-        $transformedXml = $xsltProcessor->transformToXml($domDocument);
-        if (false === $transformedXml) {
-            throw new Exception('Could not transform the given XML document.');
-        }
-
-        return $transformedXml;
-    }
-
-    /**
-     * @param mixed $xml
-     * @param \XSLTProcessor $xsltProcessor
-     *
-     * @return mixed
-     */
-    protected function transformXml($xml, $xsltProcessor)
-    {
-        if (is_array($xml)) {
-            foreach ($xml as &$item) {
-                $item = $this->transformSingleXml($item, $xsltProcessor);
-            }
-        } else {
-            $xml = $this->transformSingleXml($xml, $xsltProcessor);
-        }
-
-        return $xml;
+        $this->temporaryDocumentMainPart = $this->zipClass->getFromName('word/document.xml');
     }
 
     /**
      * Applies XSL style sheet to template's parts.
-     * 
-     * Note: since the method doesn't make any guess on logic of the provided XSL style sheet,
-     * make sure that output is correctly escaped. Otherwise you may get broken document.
      *
-     * @param \DOMDocument $xslDomDocument
+     * @param \DOMDocument $xslDOMDocument
      * @param array $xslOptions
-     * @param string $xslOptionsUri
-     *
+     * @param string $xslOptionsURI
      * @return void
-     *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
-    public function applyXslStyleSheet($xslDomDocument, $xslOptions = array(), $xslOptionsUri = '')
+    public function applyXslStyleSheet($xslDOMDocument, $xslOptions = array(), $xslOptionsURI = '')
     {
         $xsltProcessor = new \XSLTProcessor();
 
-        $xsltProcessor->importStylesheet($xslDomDocument);
-        if (false === $xsltProcessor->setParameter($xslOptionsUri, $xslOptions)) {
+        $xsltProcessor->importStylesheet($xslDOMDocument);
+
+        if (false === $xsltProcessor->setParameter($xslOptionsURI, $xslOptions)) {
             throw new Exception('Could not set values for the given XSL style sheet parameters.');
         }
 
-        $this->tempDocumentHeaders = $this->transformXml($this->tempDocumentHeaders, $xsltProcessor);
-        $this->tempDocumentMainPart = $this->transformXml($this->tempDocumentMainPart, $xsltProcessor);
-        $this->tempDocumentFooters = $this->transformXml($this->tempDocumentFooters, $xsltProcessor);
-    }
-
-    /**
-     * @param string $macro
-     *
-     * @return string
-     */
-    protected static function ensureMacroCompleted($macro)
-    {
-        if (substr($macro, 0, 2) !== '${' && substr($macro, -1) !== '}') {
-            $macro = '${' . $macro . '}';
+        $xmlDOMDocument = new \DOMDocument();
+        if (false === $xmlDOMDocument->loadXML($this->temporaryDocumentMainPart)) {
+            throw new Exception('Could not load XML from the given template.');
         }
 
-        return $macro;
-    }
-
-    /**
-     * @param string $subject
-     *
-     * @return string
-     */
-    protected static function ensureUtf8Encoded($subject)
-    {
-        if (!StringUtils::isValidUtf8($subject)) {
-            $subject = utf8_encode($subject);
+        $xmlTransformed = $xsltProcessor->transformToXml($xmlDOMDocument);
+        if (false === $xmlTransformed) {
+            throw new Exception('Could not transform the given XML document.');
         }
 
-        return $subject;
+        $this->temporaryDocumentMainPart = $xmlTransformed;
     }
 
     /**
      * @param mixed $search
      * @param mixed $replace
      * @param integer $limit
-     *
      * @return void
      */
-    public function setValue($search, $replace, $limit = self::MAXIMUM_REPLACEMENTS_DEFAULT)
+    public function setValue($search, $replace, $limit = -1)
     {
-        if (is_array($search)) {
-            foreach ($search as &$item) {
-                $item = self::ensureMacroCompleted($item);
-            }
-        } else {
-            $search = self::ensureMacroCompleted($search);
+        foreach ($this->temporaryDocumentHeaders as $index => $headerXML) {
+            $this->temporaryDocumentHeaders[$index] = $this->setValueForPart($this->temporaryDocumentHeaders[$index], $search, $replace, $limit);
         }
 
-        if (is_array($replace)) {
-            foreach ($replace as &$item) {
-                $item = self::ensureUtf8Encoded($item);
-            }
-        } else {
-            $replace = self::ensureUtf8Encoded($replace);
-        }
+        $this->temporaryDocumentMainPart = $this->setValueForPart($this->temporaryDocumentMainPart, $search, $replace, $limit);
 
-        if (Settings::isOutputEscapingEnabled()) {
-            $xmlEscaper = new Xml();
-            $replace = $xmlEscaper->escape($replace);
+        foreach ($this->temporaryDocumentFooters as $index => $headerXML) {
+            $this->temporaryDocumentFooters[$index] = $this->setValueForPart($this->temporaryDocumentFooters[$index], $search, $replace, $limit);
         }
-
-        $this->tempDocumentHeaders = $this->setValueForPart($search, $replace, $this->tempDocumentHeaders, $limit);
-        $this->tempDocumentMainPart = $this->setValueForPart($search, $replace, $this->tempDocumentMainPart, $limit);
-        $this->tempDocumentFooters = $this->setValueForPart($search, $replace, $this->tempDocumentFooters, $limit);
     }
 
     /**
@@ -243,13 +152,13 @@ class TemplateProcessor
      */
     public function getVariables()
     {
-        $variables = $this->getVariablesForPart($this->tempDocumentMainPart);
+        $variables = $this->getVariablesForPart($this->temporaryDocumentMainPart);
 
-        foreach ($this->tempDocumentHeaders as $headerXML) {
+        foreach ($this->temporaryDocumentHeaders as $headerXML) {
             $variables = array_merge($variables, $this->getVariablesForPart($headerXML));
         }
 
-        foreach ($this->tempDocumentFooters as $footerXML) {
+        foreach ($this->temporaryDocumentFooters as $footerXML) {
             $variables = array_merge($variables, $this->getVariablesForPart($footerXML));
         }
 
@@ -261,18 +170,16 @@ class TemplateProcessor
      *
      * @param string $search
      * @param integer $numberOfClones
-     *
      * @return void
-     *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
     public function cloneRow($search, $numberOfClones)
     {
-        if ('${' !== substr($search, 0, 2) && '}' !== substr($search, -1)) {
+        if (substr($search, 0, 2) !== '${' && substr($search, -1) !== '}') {
             $search = '${' . $search . '}';
         }
 
-        $tagPos = strpos($this->tempDocumentMainPart, $search);
+        $tagPos = strpos($this->temporaryDocumentMainPart, $search);
         if (!$tagPos) {
             throw new Exception("Can not clone row, template variable not found or variable contains markup.");
         }
@@ -312,7 +219,7 @@ class TemplateProcessor
         }
         $result .= $this->getSlice($rowEnd);
 
-        $this->tempDocumentMainPart = $result;
+        $this->temporaryDocumentMainPart = $result;
     }
 
     /**
@@ -321,30 +228,32 @@ class TemplateProcessor
      * @param string $blockname
      * @param integer $clones
      * @param boolean $replace
-     *
      * @return string|null
      */
     public function cloneBlock($blockname, $clones = 1, $replace = true)
     {
         $xmlBlock = null;
-        preg_match(
-            '/(<\?xml.*)(<w:p.*>\${' . $blockname . '}<\/w:.*?p>)(.*)(<w:p.*\${\/' . $blockname . '}<\/w:.*?p>)/is',
-            $this->tempDocumentMainPart,
-            $matches
-        );
 
-        if (isset($matches[3])) {
-            $xmlBlock = $matches[3];
+        $matches = $this->findBlock($blockname);
+
+        if (isset($matches[1]))
+        {
+            $xmlBlock = $matches[1];
+
             $cloned = array();
-            for ($i = 1; $i <= $clones; $i++) {
-                $cloned[] = $xmlBlock;
+
+            for ($i = 1; $i <= $clones; $i++)
+            {
+                $cloned[] = preg_replace('/\${(.*?)}/','${$1_'.$i.'}', $xmlBlock);
             }
 
-            if ($replace) {
-                $this->tempDocumentMainPart = str_replace(
-                    $matches[2] . $matches[3] . $matches[4],
+            if ($replace)
+            {
+                $this->temporaryDocumentMainPart = str_replace
+                (
+                    $matches[0],
                     implode('', $cloned),
-                    $this->tempDocumentMainPart
+                    $this->temporaryDocumentMainPart
                 );
             }
         }
@@ -357,22 +266,19 @@ class TemplateProcessor
      *
      * @param string $blockname
      * @param string $replacement
-     *
      * @return void
      */
     public function replaceBlock($blockname, $replacement)
     {
-        preg_match(
-            '/(<\?xml.*)(<w:p.*>\${' . $blockname . '}<\/w:.*?p>)(.*)(<w:p.*\${\/' . $blockname . '}<\/w:.*?p>)/is',
-            $this->tempDocumentMainPart,
-            $matches
-        );
+        $matches = $this->findBlock($blockname);
 
-        if (isset($matches[3])) {
-            $this->tempDocumentMainPart = str_replace(
-                $matches[2] . $matches[3] . $matches[4],
+        if (isset($matches[1]))
+        {
+            $this->temporaryDocumentMainPart = str_replace
+            (
+                $matches[0],
                 $replacement,
-                $this->tempDocumentMainPart
+                $this->temporaryDocumentMainPart
             );
         }
     }
@@ -381,7 +287,6 @@ class TemplateProcessor
      * Delete a block of text.
      *
      * @param string $blockname
-     *
      * @return void
      */
     public function deleteBlock($blockname)
@@ -393,19 +298,18 @@ class TemplateProcessor
      * Saves the result document.
      *
      * @return string
-     *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
     public function save()
     {
-        foreach ($this->tempDocumentHeaders as $index => $xml) {
-            $this->zipClass->addFromString($this->getHeaderName($index), $xml);
+        foreach ($this->temporaryDocumentHeaders as $index => $headerXML) {
+            $this->zipClass->addFromString($this->getHeaderName($index), $this->temporaryDocumentHeaders[$index]);
         }
 
-        $this->zipClass->addFromString($this->getMainPartName(), $this->tempDocumentMainPart);
+        $this->zipClass->addFromString('word/document.xml', $this->temporaryDocumentMainPart);
 
-        foreach ($this->tempDocumentFooters as $index => $xml) {
-            $this->zipClass->addFromString($this->getFooterName($index), $xml);
+        foreach ($this->temporaryDocumentFooters as $index => $headerXML) {
+            $this->zipClass->addFromString($this->getFooterName($index), $this->temporaryDocumentFooters[$index]);
         }
 
         // Close zip file
@@ -413,7 +317,7 @@ class TemplateProcessor
             throw new Exception('Could not close zip file.');
         }
 
-        return $this->tempDocumentFilename;
+        return $this->temporaryDocumentFilename;
     }
 
     /**
@@ -422,7 +326,6 @@ class TemplateProcessor
      * @since 0.8.0
      *
      * @param string $fileName
-     *
      * @return void
      */
     public function saveAs($fileName)
@@ -433,65 +336,45 @@ class TemplateProcessor
             unlink($fileName);
         }
 
-        /*
-         * Note: we do not use `rename` function here, because it looses file ownership data on Windows platform.
-         * As a result, user cannot open the file directly getting "Access denied" message.
-         *
-         * @see https://github.com/PHPOffice/PHPWord/issues/532
-         */
-        copy($tempFileName, $fileName);
-        unlink($tempFileName);
+        rename($tempFileName, $fileName);
     }
 
     /**
-     * Finds parts of broken macros and sticks them together.
-     * Macros, while being edited, could be implicitly broken by some of the word processors.
+     * Find and replace placeholders in the given XML section.
      *
-     * @param string $documentPart The document part in XML representation.
-     *
-     * @return string
-     */
-    protected function fixBrokenMacros($documentPart)
-    {
-        $fixedDocumentPart = $documentPart;
-
-        $fixedDocumentPart = preg_replace_callback(
-            '|\$[^{]*\{[^}]*\}|U',
-            function ($match) {
-                return strip_tags($match[0]);
-            },
-            $fixedDocumentPart
-        );
-
-        return $fixedDocumentPart;
-    }
-
-    /**
-     * Find and replace macros in the given XML section.
-     *
-     * @param mixed $search
-     * @param mixed $replace
      * @param string $documentPartXML
+     * @param string $search
+     * @param string $replace
      * @param integer $limit
-     *
      * @return string
      */
-    protected function setValueForPart($search, $replace, $documentPartXML, $limit)
+    protected function setValueForPart($documentPartXML, $search, $replace, $limit)
     {
-        // Note: we can't use the same function for both cases here, because of performance considerations.
-        if (self::MAXIMUM_REPLACEMENTS_DEFAULT === $limit) {
-            return str_replace($search, $replace, $documentPartXML);
-        } else {
-            $regExpEscaper = new RegExp();
-            return preg_replace($regExpEscaper->escape($search), $replace, $documentPartXML, $limit);
+        $pattern = '|\$\{([^\}]+)\}|U';
+        preg_match_all($pattern, $documentPartXML, $matches);
+        foreach ($matches[0] as $value) {
+            $valueCleaned = preg_replace('/<[^>]+>/', '', $value);
+            $valueCleaned = preg_replace('/<\/[^>]+>/', '', $valueCleaned);
+            $documentPartXML = str_replace($value, $valueCleaned, $documentPartXML);
         }
+
+        if (substr($search, 0, 2) !== '${' && substr($search, -1) !== '}') {
+            $search = '${' . $search . '}';
+        }
+
+        if (!String::isUTF8($replace)) {
+            $replace = utf8_encode($replace);
+        }
+
+        $regExpDelim = '/';
+        $escapedSearch = preg_quote($search, $regExpDelim);
+        return preg_replace("{$regExpDelim}{$escapedSearch}{$regExpDelim}u", $replace, $documentPartXML, $limit);
     }
 
     /**
      * Find all variables in $documentPartXML.
      *
      * @param string $documentPartXML
-     *
      * @return string[]
      */
     protected function getVariablesForPart($documentPartXML)
@@ -502,52 +385,40 @@ class TemplateProcessor
     }
 
     /**
-     * Get the name of the header file for $index.
-     *
-     * @param integer $index
-     *
-     * @return string
-     */
-    protected function getHeaderName($index)
-    {
-        return sprintf('word/header%d.xml', $index);
-    }
-
-    /**
-     * @return string
-     */
-    protected function getMainPartName()
-    {
-        return 'word/document.xml';
-    }
-
-    /**
      * Get the name of the footer file for $index.
      *
      * @param integer $index
-     *
      * @return string
      */
-    protected function getFooterName($index)
+    private function getFooterName($index)
     {
         return sprintf('word/footer%d.xml', $index);
+    }
+
+    /**
+     * Get the name of the header file for $index.
+     *
+     * @param integer $index
+     * @return string
+     */
+    private function getHeaderName($index)
+    {
+        return sprintf('word/header%d.xml', $index);
     }
 
     /**
      * Find the start position of the nearest table row before $offset.
      *
      * @param integer $offset
-     *
      * @return integer
-     *
      * @throws \PhpOffice\PhpWord\Exception\Exception
      */
-    protected function findRowStart($offset)
+    private function findRowStart($offset)
     {
-        $rowStart = strrpos($this->tempDocumentMainPart, '<w:tr ', ((strlen($this->tempDocumentMainPart) - $offset) * -1));
+        $rowStart = strrpos($this->temporaryDocumentMainPart, '<w:tr ', ((strlen($this->temporaryDocumentMainPart) - $offset) * -1));
 
         if (!$rowStart) {
-            $rowStart = strrpos($this->tempDocumentMainPart, '<w:tr>', ((strlen($this->tempDocumentMainPart) - $offset) * -1));
+            $rowStart = strrpos($this->temporaryDocumentMainPart, '<w:tr>', ((strlen($this->temporaryDocumentMainPart) - $offset) * -1));
         }
         if (!$rowStart) {
             throw new Exception('Can not find the start position of the row to clone.');
@@ -560,12 +431,11 @@ class TemplateProcessor
      * Find the end position of the nearest table row after $offset.
      *
      * @param integer $offset
-     *
      * @return integer
      */
-    protected function findRowEnd($offset)
+    private function findRowEnd($offset)
     {
-        return strpos($this->tempDocumentMainPart, '</w:tr>', $offset) + 7;
+        return strpos($this->temporaryDocumentMainPart, '</w:tr>', $offset) + 7;
     }
 
     /**
@@ -573,15 +443,117 @@ class TemplateProcessor
      *
      * @param integer $startPosition
      * @param integer $endPosition
-     *
      * @return string
      */
-    protected function getSlice($startPosition, $endPosition = 0)
+    private function getSlice($startPosition, $endPosition = 0)
     {
         if (!$endPosition) {
-            $endPosition = strlen($this->tempDocumentMainPart);
+            $endPosition = strlen($this->temporaryDocumentMainPart);
         }
 
-        return substr($this->tempDocumentMainPart, $startPosition, ($endPosition - $startPosition));
+        return substr($this->temporaryDocumentMainPart, $startPosition, ($endPosition - $startPosition));
+    }
+
+    private function findBlock($blockname)
+    {
+        // Parse the XML
+        $xml = new \SimpleXMLElement($this->temporaryDocumentMainPart);
+
+        // Find the starting and ending tags
+        $startNode = false; $endNode = false;
+        foreach ($xml->xpath('//w:t') as $node)
+        {
+            if (strpos($node, '${'.$blockname.'}') !== false)
+            {
+                $startNode = $node;
+                continue;
+            }
+
+            if (strpos($node, '${/'.$blockname.'}') !== false)
+            {
+                $endNode = $node;
+                break;
+            }
+        }
+
+        // Make sure we found the tags
+        if ($startNode === false || $endNode === false)
+        {
+            return null;
+        }
+
+        // Find the parent <w:p> node for the start tag
+        $node = $startNode; $startNode = null;
+        while (is_null($startNode))
+        {
+            $node = $node->xpath('..')[0];
+
+            if ($node->getName() == 'p')
+            {
+                $startNode = $node;
+            }
+        }
+
+        // Find the parent <w:p> node for the end tag
+        $node = $endNode; $endNode = null;
+        while (is_null($endNode))
+        {
+            $node = $node->xpath('..')[0];
+
+            if ($node->getName() == 'p')
+            {
+                $endNode = $node;
+            }
+        }
+
+        /*
+         * NOTE: Because SimpleXML reduces empty tags to "self-closing" tags.
+         * We need to replace the original XML with the version of XML as
+         * SimpleXML sees it. The following example should show the issue
+         * we are facing.
+         *
+         * This is the XML that my document contained orginally.
+         *
+         * ```xml
+         *  <w:p>
+         *      <w:pPr>
+         *          <w:pStyle w:val="TextBody"/>
+         *          <w:rPr></w:rPr>
+         *      </w:pPr>
+         *      <w:r>
+         *          <w:rPr></w:rPr>
+         *          <w:t>${CLONEME}</w:t>
+         *      </w:r>
+         *  </w:p>
+         * ```
+         *
+         * This is the XML that SimpleXML returns from asXml().
+         *
+         * ```xml
+         *  <w:p>
+         *      <w:pPr>
+         *          <w:pStyle w:val="TextBody"/>
+         *          <w:rPr/>
+         *      </w:pPr>
+         *      <w:r>
+         *          <w:rPr/>
+         *          <w:t>${CLONEME}</w:t>
+         *      </w:r>
+         *  </w:p>
+         * ```
+         */
+
+        $this->temporaryDocumentMainPart = $xml->asXml();
+
+        // Find the xml in between the tags
+        $xmlBlock = null;
+        preg_match
+        (
+            '/'.preg_quote($startNode->asXml(), '/').'(.*?)'.preg_quote($endNode->asXml(), '/').'/is',
+            $this->temporaryDocumentMainPart,
+            $matches
+        );
+
+        return $matches;
     }
 }
